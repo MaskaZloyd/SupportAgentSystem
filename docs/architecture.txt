@@ -1,0 +1,60 @@
+---
+config:
+  layout: elk
+  look: neo
+  theme: base
+---
+flowchart TD
+ subgraph SupportDomain["Домен поддержки"]
+    direction LR
+        SupportUI["Support UI<br>Пользовательский интерфейс службы поддержки"]
+        APIGateway["API Gateway<br>Единая точка входа для API"]
+        OrchestratorService["Orchestrator Service<br>(Python/FastAPI+Celery)<br>- Хранение состояния workflow<br>- Публикация доменных событий<br>- Retry/timeout‑логика"]
+  end
+ subgraph ObservabilitySG["Наблюдаемость"]
+    direction LR
+        Prometheus["Prometheus<br>Сбор метрик (latency, GPU, Celery)"]
+        Grafana["Grafana<br>Дашборды, визуализация логов и трейсов"]
+        Loki["Loki<br>Агрегация и поиск логов приложений и inference"]
+        OpenTelemetry["OpenTelemetry<br>Сбор и хранение трейсов (с Grafana Tempo)"]
+  end
+ subgraph Infrastructure["Инфраструктура"]
+    direction TB
+        MessageBus["Шина сообщений<br>(Kafka / NATS)<br>- Асинхронная коммуникация<br>- Буферизация, гарантия доставки (at‑least‑once)<br>- DLQ (Dead Letter Queue)"]
+        FeatureStore["Feature Store<br>(Feast)<br>- Управление признаками<br>- Согласованность признаков для Queen Model и адаптеров"]
+        ModelRegistry["Model Registry<br>(MLflow)<br>- Версионирование Queen Model и адаптеров (LoRA)<br>- Отслеживание экспериментов<br>- Canary‑продвижение"]
+        ObservabilitySG
+  end
+ subgraph UnifiedMLAgent["Единый ML‑агент (на Triton / KServe)"]
+    direction TB
+        QueenMLAgent["Queen ML Agent<br>(Unified LLM с адаптерами LoRA и т.д.)<br>- Адаптер Валидации: проверка полноты<br>- Адаптер Контекста: извлечение сущностей, embedding<br>- Адаптер Логов: парсинг логов, поиск аномалий<br>- Адаптер Аналитики: RCA (поиск первопричины)"]
+  end
+ subgraph Storage["Хранилище"]
+    direction LR
+        PostgreSQLDb["PostgreSQL DB<br>Хранение состояния workflow Оркестратора"]
+        RedisDb["Redis<br>Кэш, временные данные Оркестратора"]
+        ObjectStorage["Объектное хранилище<br>(S3 / MinIO)<br>Хранение сырых логов (через адаптер Логов)"]
+        VectorDB["Vector DB<br>Хранение embeddings (через адаптер Контекста)"]
+  end
+    SupportUI -- Создание/обновление тикета --> APIGateway
+    APIGateway -- Запрос на обработку тикета --> OrchestratorService
+    OrchestratorService -- "Pub: ticket.created / ticket.updated" --> MessageBus
+    OrchestratorService -- Чтение/запись состояния --> PostgreSQLDb
+    OrchestratorService -- Чтение/запись кэша --> RedisDb
+    OrchestratorService -- Взаимодействие с признаками --> FeatureStore
+    OrchestratorService -- Взаимодействие с реестром моделей --> ModelRegistry
+    OrchestratorService -. Отправка метрик/логов/трейсов .-> ObservabilitySG
+    MessageBus -- "Событие: ticket.created (Задача: Валидация)" --> QueenMLAgent
+    MessageBus -- "Событие: ticket.valid (Задача: Контекст)" --> QueenMLAgent
+    MessageBus -- "Событие: ticket.valid (Задача: Анализ Логов)" --> QueenMLAgent
+    MessageGas["MessageGas"] -- "События: context.done, logs.done (Задача: RCA)" --> QueenMLAgent
+    QueenMLAgent -- "Pub: validation.done (полнота данных)" --> MessageBus
+    QueenMLAgent -- "Pub: context.done (сущности, embeddings)" --> MessageBus
+    QueenMLAgent -- "Pub: logs.done (анализ логов)" --> MessageBus
+    QueenMLAgent -- "Pub: rca.done (отчет RCA)" --> MessageBus
+    MessageBus -- "Sub: validation.done" --> OrchestratorService
+    MessageBus -- "Sub: rca.done" --> OrchestratorService
+    QueenMLAgent -- Сохранение сырых логов (через адаптер Логов) --> ObjectStorage
+    QueenMLAgent -- Запись embeddings (через адаптер Контекста) --> VectorDB
+    QueenMLAgent -. Метрики/Логи Inference Queen Model .-> ObservabilitySG
+    MessageBus -. Метрики/Логи брокера .-> ObservabilitySG
