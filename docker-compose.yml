@@ -28,3 +28,39 @@ services:
       KAFKA_CONFLUENT_BALANCER_TOPIC_REPLICATION_FACTOR: 1
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
       KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+
+  redis_db:
+    image: redis:6-alpine
+    container_name: redis_db
+    ports:
+      - "6379:6379"
+
+  orchestrator_service:
+    build: ./orchestrator_service
+    container_name: orchestrator_service
+    ports:
+      - "8000:80" # FastAPI на localhost:8000
+    environment:
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - CELERY_BROKER_URL=redis://redis_db:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis_db:6379/0
+    depends_on:
+      - kafka
+      - redis_db
+    volumes:
+      - ./orchestrator_service/app:/usr/src/app/app
+
+  orchestrator_worker:
+    build: ./orchestrator_service
+    container_name: orchestrator_worker
+    command: celery -A app.tasks.celery_app worker -l info
+    environment:
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - CELERY_BROKER_URL=redis://redis_db:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis_db:6379/0
+    depends_on:
+      - kafka
+      - redis_db
+      - orchestrator_service
+    volumes:
+      - ./orchestrator_service/app:/usr/src/app/app
